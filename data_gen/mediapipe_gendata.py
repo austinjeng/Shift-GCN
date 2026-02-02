@@ -233,7 +233,7 @@ def _extract_and_save(videos, out_path, part, max_frame=300):
 
 
 def gendata_ntu(video_dir, out_path, falling_action=43, benchmark='xsub',
-                subsample_ratio=1.0, max_frame=300, seed=42):
+                subsample_ratio=1.0, max_frame=300, seed=42, video_list=None):
     """Generate binary fall-detection data from NTU RGB+D videos via MediaPipe.
 
     Args:
@@ -244,15 +244,26 @@ def gendata_ntu(video_dir, out_path, falling_action=43, benchmark='xsub',
         subsample_ratio: ratio of negatives to positives for class balancing.
         max_frame: maximum frames per video.
         seed: random seed for subsampling reproducibility.
+        video_list: optional path to a text file listing video basenames (one per
+                    line) to process. If None, all videos in video_dir are used.
     """
     if not os.path.exists(out_path):
         os.makedirs(out_path)
 
     video_extensions = {'.avi', '.mp4', '.mkv'}
-    all_files = sorted(
-        f for f in glob.glob(os.path.join(video_dir, '*'))
-        if os.path.isfile(f) and os.path.splitext(f)[1].lower() in video_extensions
-    )
+
+    if video_list is not None:
+        with open(video_list, 'r') as f:
+            allowed = {line.strip() for line in f if line.strip()}
+        all_files = sorted(
+            os.path.join(video_dir, name) for name in allowed
+            if os.path.isfile(os.path.join(video_dir, name))
+        )
+    else:
+        all_files = sorted(
+            f for f in glob.glob(os.path.join(video_dir, '*'))
+            if os.path.isfile(f) and os.path.splitext(f)[1].lower() in video_extensions
+        )
 
     train_videos = []
     val_videos = []
@@ -314,6 +325,9 @@ if __name__ == '__main__':
                         help='Ratio of negatives to positives for class balancing')
     parser.add_argument('--seed', type=int, default=42,
                         help='Random seed for subsampling')
+    parser.add_argument('--video_list', default=None,
+                        help='Text file listing video basenames to process (one per line). '
+                             'If not provided, all videos in video_dir are used.')
 
     # Generic mode arguments
     parser.add_argument('--train_split', default=None,
@@ -334,6 +348,7 @@ if __name__ == '__main__':
             subsample_ratio=args.subsample_ratio,
             max_frame=args.max_frame,
             seed=args.seed,
+            video_list=args.video_list,
         )
     else:
         if not args.label_map:
