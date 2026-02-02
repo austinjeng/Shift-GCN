@@ -33,6 +33,21 @@
 - Preprocessing: `pre_normalization(data, zaxis, xaxis, center_joint)` — center_joint accepts int or list of ints for averaging
 - MediaPipe center: `center_joint=[23, 24]` (hip midpoint); NTU center: `center_joint=1` (spine)
 
+## NTU RGB+D Filename Convention
+- Pattern: `SsssCcccPpppRrrrAaaa.ext` (setup, camera, subject, replication, action)
+- Parsed via `parse_ntu_filename()` in `data_gen/mediapipe_gendata.py`
+- Training subjects (xsub): `{1,2,4,5,8,9,13,14,15,16,17,18,19,25,27,28,31,34,35,38}`
+- Training cameras (xview): `{2, 3}`
+- A043 = "falling down" — used as positive class for binary fall detection
+
+## NTU-to-MediaPipe Pipeline
+- `mediapipe_gendata.py --ntu_mode` extracts MediaPipe landmarks from NTU RGB+D videos
+- Binary labels: A043 (falling) = 1, everything else = 0
+- Cross-subject or cross-view split via `--benchmark xsub|xview`
+- Class balancing via `--subsample_ratio` (negatives subsampled to ratio * positives)
+- Output: `{train,val}_data_joint.npy` + `{train,val}_label.pkl` — feeds directly into existing config/mediapipe pipeline
+- Without `--ntu_mode`, original generic label_map behavior is preserved
+
 ## Testing
 - `python main.py --config ./config/mediapipe/train_joint.yaml` — train MediaPipe joint model
 - Ensemble: `python ensemble_mediapipe.py` (weights: 0.6 joint, 0.6 bone, 0.4 joint_motion, 0.4 bone_motion)
