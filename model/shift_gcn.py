@@ -75,7 +75,7 @@ class Shift_tcn(nn.Module):
 
 
 class Shift_gcn(nn.Module):
-    def __init__(self, in_channels, out_channels, A, coff_embedding=4, num_subset=3):
+    def __init__(self, in_channels, out_channels, A, coff_embedding=4, num_subset=3, num_point=25):
         super(Shift_gcn, self).__init__()
         self.in_channels = in_channels
         self.out_channels = out_channels
@@ -93,10 +93,10 @@ class Shift_gcn(nn.Module):
         self.Linear_bias = nn.Parameter(torch.zeros(1,1,out_channels,requires_grad=True,device='cuda'),requires_grad=True)
         nn.init.constant(self.Linear_bias, 0)
 
-        self.Feature_Mask = nn.Parameter(torch.ones(1,25,in_channels, requires_grad=True,device='cuda'),requires_grad=True)
+        self.Feature_Mask = nn.Parameter(torch.ones(1,num_point,in_channels, requires_grad=True,device='cuda'),requires_grad=True)
         nn.init.constant(self.Feature_Mask, 0)
 
-        self.bn = nn.BatchNorm1d(25*out_channels)
+        self.bn = nn.BatchNorm1d(num_point*out_channels)
         self.relu = nn.ReLU()
 
         for m in self.modules():
@@ -105,16 +105,16 @@ class Shift_gcn(nn.Module):
             elif isinstance(m, nn.BatchNorm2d):
                 bn_init(m, 1)
 
-        index_array = np.empty(25*in_channels).astype(np.int)
-        for i in range(25):
+        index_array = np.empty(num_point*in_channels).astype(int)
+        for i in range(num_point):
             for j in range(in_channels):
-                index_array[i*in_channels + j] = (i*in_channels + j + j*in_channels)%(in_channels*25)
+                index_array[i*in_channels + j] = (i*in_channels + j + j*in_channels)%(in_channels*num_point)
         self.shift_in = nn.Parameter(torch.from_numpy(index_array),requires_grad=False)
 
-        index_array = np.empty(25*out_channels).astype(np.int)
-        for i in range(25):
+        index_array = np.empty(num_point*out_channels).astype(int)
+        for i in range(num_point):
             for j in range(out_channels):
-                index_array[i*out_channels + j] = (i*out_channels + j - j*out_channels)%(out_channels*25)
+                index_array[i*out_channels + j] = (i*out_channels + j - j*out_channels)%(out_channels*num_point)
         self.shift_out = nn.Parameter(torch.from_numpy(index_array),requires_grad=False)
         
 
@@ -143,9 +143,9 @@ class Shift_gcn(nn.Module):
 
 
 class TCN_GCN_unit(nn.Module):
-    def __init__(self, in_channels, out_channels, A, stride=1, residual=True):
+    def __init__(self, in_channels, out_channels, A, stride=1, residual=True, num_point=25):
         super(TCN_GCN_unit, self).__init__()
-        self.gcn1 = Shift_gcn(in_channels, out_channels, A)
+        self.gcn1 = Shift_gcn(in_channels, out_channels, A, num_point=num_point)
         self.tcn1 = Shift_tcn(out_channels, out_channels, stride=stride)
         self.relu = nn.ReLU()
 
@@ -175,16 +175,16 @@ class Model(nn.Module):
         A = self.graph.A
         self.data_bn = nn.BatchNorm1d(num_person * in_channels * num_point)
 
-        self.l1 = TCN_GCN_unit(3, 64, A, residual=False)
-        self.l2 = TCN_GCN_unit(64, 64, A)
-        self.l3 = TCN_GCN_unit(64, 64, A)
-        self.l4 = TCN_GCN_unit(64, 64, A)
-        self.l5 = TCN_GCN_unit(64, 128, A, stride=2)
-        self.l6 = TCN_GCN_unit(128, 128, A)
-        self.l7 = TCN_GCN_unit(128, 128, A)
-        self.l8 = TCN_GCN_unit(128, 256, A, stride=2)
-        self.l9 = TCN_GCN_unit(256, 256, A)
-        self.l10 = TCN_GCN_unit(256, 256, A)
+        self.l1 = TCN_GCN_unit(3, 64, A, residual=False, num_point=num_point)
+        self.l2 = TCN_GCN_unit(64, 64, A, num_point=num_point)
+        self.l3 = TCN_GCN_unit(64, 64, A, num_point=num_point)
+        self.l4 = TCN_GCN_unit(64, 64, A, num_point=num_point)
+        self.l5 = TCN_GCN_unit(64, 128, A, stride=2, num_point=num_point)
+        self.l6 = TCN_GCN_unit(128, 128, A, num_point=num_point)
+        self.l7 = TCN_GCN_unit(128, 128, A, num_point=num_point)
+        self.l8 = TCN_GCN_unit(128, 256, A, stride=2, num_point=num_point)
+        self.l9 = TCN_GCN_unit(256, 256, A, num_point=num_point)
+        self.l10 = TCN_GCN_unit(256, 256, A, num_point=num_point)
 
         self.fc = nn.Linear(256, num_class)
         nn.init.normal(self.fc.weight, 0, math.sqrt(2. / num_class))

@@ -5,7 +5,16 @@ from rotation import *
 from tqdm import tqdm
 
 
-def pre_normalization(data, zaxis=[0, 1], xaxis=[8, 4]):
+def pre_normalization(data, zaxis=[0, 1], xaxis=[8, 4], center_joint=1):
+    """Normalize skeleton data.
+
+    Args:
+        data: (N, C, T, V, M) skeleton data.
+        zaxis: [joint_bottom, joint_top] for z-axis alignment.
+        xaxis: [joint_right, joint_left] for x-axis alignment.
+        center_joint: Joint index for centering, or a list of joint indices
+                      whose mean is used as center (e.g. [23, 24] for hip midpoint).
+    """
     N, C, T, V, M = data.shape
     s = np.transpose(data, [0, 4, 2, 3, 1])  # N, C, T, V, M  to  N, M, T, V, C
 
@@ -30,11 +39,17 @@ def pre_normalization(data, zaxis=[0, 1], xaxis=[8, 4]):
                         s[i_s, i_p, i_f:] = pad
                         break
 
-    print('sub the center joint #1 (spine joint in ntu and neck joint in kinetics)')
+    print('sub the center joint (spine joint in ntu, hip midpoint in mediapipe)')
     for i_s, skeleton in enumerate(tqdm(s)):
         if skeleton.sum() == 0:
             continue
-        main_body_center = skeleton[0][:, 1:2, :].copy()
+        if isinstance(center_joint, (list, tuple)):
+            # Average of multiple joints (e.g. hip midpoint)
+            main_body_center = np.mean(
+                [skeleton[0][:, j:j+1, :] for j in center_joint], axis=0
+            ).copy()
+        else:
+            main_body_center = skeleton[0][:, center_joint:center_joint+1, :].copy()
         for i_p, person in enumerate(skeleton):
             if person.sum() == 0:
                 continue
