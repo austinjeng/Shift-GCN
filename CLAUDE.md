@@ -1,5 +1,45 @@
 # Shift-GCN
 
+## Current Progress (2026-02-04)
+
+**目標**：使用 MediaPipe Pose 從 NTU RGB+D 影片進行二元跌倒偵測
+
+| 階段 | 狀態 | 備註 |
+|------|------|------|
+| MediaPipe 圖結構 (`graph/mediapipe_pose.py`) | ✅ 完成 | 33 landmarks, 橋接邊連通 |
+| 模型參數化 (`model/shift_gcn.py`) | ✅ 完成 | `num_point` 可設定 |
+| 前處理修改 (`data_gen/preprocess.py`) | ✅ 完成 | 支援多關節中心平均 |
+| 資料生成腳本 (`data_gen/mediapipe_gendata.py`) | ✅ 完成 | NTU 模式 + 類別平衡 |
+| 設定檔 (`config/mediapipe/*.yaml`) | ✅ 完成 | 4 種模態 |
+| POC Joint 資料生成 | ✅ 完成 | train: 6, val: 4 |
+| Bone 資料生成 | ❌ 待執行 | `gen_bone_data_mediapipe.py` |
+| Motion 資料生成 | ❌ 待執行 | `gen_motion_data_mediapipe.py` |
+| 模型訓練 | ❌ 待執行 | `main.py --config ...` |
+| 集成評估 | ❌ 待執行 | `ensemble_mediapipe.py` |
+
+### Next Steps
+```bash
+# 1. 生成 bone/motion 資料
+cd data_gen && python gen_bone_data_mediapipe.py
+cd data_gen && python gen_motion_data_mediapipe.py
+
+# 2. 訓練 joint 模型
+python main.py --config ./config/mediapipe/train_joint.yaml
+
+# 3. 訓練其他模型 (bone, joint_motion, bone_motion)
+python main.py --config ./config/mediapipe/train_bone.yaml
+python main.py --config ./config/mediapipe/train_joint_motion.yaml
+python main.py --config ./config/mediapipe/train_bone_motion.yaml
+
+# 4. 集成評估
+python ensemble_mediapipe.py
+```
+
+### Documentation
+- 完整適配報告：`MEDIAPIPE_ADAPTATION_REPORT_zh-TW.md`（含非技術背景說明）
+
+---
+
 ## Architecture
 - Skeleton-based action recognition using shift graph convolutions
 - `Shift_gcn` does NOT use adjacency matrix `A` — shift mechanism replaces spatial GCN entirely
