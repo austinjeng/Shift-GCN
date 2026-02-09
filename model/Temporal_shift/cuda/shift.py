@@ -10,6 +10,7 @@ class ShiftFunction(Function):
     
     @staticmethod
     def forward(ctx, input,xpos,ypos,stride=1):
+        input = input.contiguous()
         if stride==1:
             xpos = xpos
             ypos = ypos
@@ -24,7 +25,7 @@ class ShiftFunction(Function):
     @staticmethod
     def backward(ctx, grad_output): 
         grad_output = grad_output.contiguous()
-        input, output, xpos, ypos = ctx.saved_variables
+        input, output, xpos, ypos = ctx.saved_tensors
         grad_input,grad_xpos,grad_ypos = shift_cuda.backward(grad_output, input, output, xpos, ypos, ctx.stride)
         return grad_input, grad_xpos, grad_ypos, None
         
