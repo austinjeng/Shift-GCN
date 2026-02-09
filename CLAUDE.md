@@ -20,6 +20,7 @@
 | 程式碼審查 | ✅ 完成 | 發現關鍵問題待修 (見下方) |
 | 關鍵修復 C1-C7 | ✅ 完成 | 全部 7 個問題已修復 |
 | ML-Ops 修復 M1-M8 | ✅ 完成 | interval/resume/cleanup/ensemble 等 8 項 |
+| 穩健性修復 P1-P3 | ✅ 完成 | resume 安全、記憶體優化、檔案處理 (6 項) |
 
 ### Critical Fixes Applied (C1-C7)
 
@@ -47,6 +48,17 @@ All issues identified in code review have been **fixed**:
 | M6 | LOW | `main.py` | Glob-based checkpoint cleanup (not `shutil.rmtree`) |
 | M7 | LOW | `main.py` | Removed dead `ReduceLROnPlateau` scheduler |
 | M8 | LOW | `main.py` | Replaced global `arg` with `self.arg` in eval |
+
+### Robustness Fixes Applied (P1-P3)
+
+| ID | Priority | File | Fix Applied |
+|----|----------|------|-------------|
+| P1a | HIGH | `main.py` | `--overwrite` skips resume target via `os.path.abspath()` comparison |
+| P1b | HIGH | `main.py` | Removed wrong `global_step` formula in `start()`; trusts `__init__` value |
+| P1c | HIGH | `mediapipe_gendata.py` | Two-pass mmap chunk concat (preallocate + sequential copy) |
+| P2a | MEDIUM | `main.py` | `--overwrite` also cleans `eval_results/*.pkl` |
+| P3a | LOW | `main.py` | Eval file handles wrapped in `try/finally` via `_eval_inner` |
+| P3b | LOW | `main.py` | `.pkl` weights opened in `'rb'` (binary mode) |
 
 ### Next Steps
 ```bash
@@ -130,12 +142,19 @@ conda run -n goldcoin --cwd "D:\Shift-GCN" python ensemble_mediapipe.py
 - M6: Checkpoint cleanup uses `glob.glob()` instead of `shutil.rmtree()` (matches flat .pt files)
 - M7: Removed unused `ReduceLROnPlateau` scheduler
 - M8: Eval methods use `self.arg` instead of module-level `arg`
+- P1a: `--overwrite` protects `--resume` target from deletion (abspath comparison)
+- P1b: Removed `global_step` recalculation in `start()` (was wrong units + overwrote checkpoint value)
+- P1c: Chunk concat uses two-pass mmap + preallocate instead of loading all chunks at once
+- P2a: `--overwrite` cleans `eval_results/*.pkl` alongside checkpoint `.pt` files
+- P3a: Eval `wrong_file`/`result_file` handles closed in `finally` block
+- P3b: `.pkl` weight file opened with `'rb'` instead of `'r'`
 
 ## Checkpoint Format
 - Checkpoints are dicts: `{model_state_dict, optimizer_state_dict, epoch, global_step, best_acc}`
 - `--weights` auto-detects new dict format vs legacy bare state_dict
 - `--resume <path.pt>` restores full training state (model + optimizer + epoch + best_acc)
 - Checkpoint files: `./save_models/<Experiment_name>-<epoch>-<global_step>.pt` (flat files, not directories)
+- `--overwrite True` cleans old `.pt` checkpoints AND `eval_results/*.pkl`; safe to combine with `--resume` (resume target is protected)
 
 ## Known Deprecations (all fixed)
 - `np.int` removed in numpy — use `int` (fixed in Shift_gcn)

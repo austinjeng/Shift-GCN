@@ -230,11 +230,26 @@ def _extract_and_save(videos, out_path, part, max_frame=300, chunk_size=5000):
         print(f'No valid samples found for {part}.')
         return
 
-    # Concatenate all chunks
+    # Concatenate all chunks (memory-efficient: preallocate + sequential copy)
     if len(chunk_files) == 1:
         fp = np.load(chunk_files[0])
     else:
-        fp = np.concatenate([np.load(f) for f in chunk_files], axis=0)
+        # First pass: compute total sample count without loading data
+        chunk_sizes = []
+        for f in chunk_files:
+            arr = np.load(f, mmap_mode='r')
+            chunk_sizes.append(arr.shape[0])
+            del arr
+        total_N = sum(chunk_sizes)
+        # Preallocate final array
+        fp = np.zeros((total_N, 3, max_frame, num_joint, max_body_true), dtype=np.float32)
+        # Second pass: load each chunk, copy, and free
+        offset = 0
+        for f, n in zip(chunk_files, chunk_sizes):
+            chunk = np.load(f)
+            fp[offset:offset + n] = chunk
+            del chunk
+            offset += n
 
     # Clean up temp chunk files
     for f in chunk_files:

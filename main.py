@@ -184,6 +184,10 @@ class Processor():
         if arg.phase == 'train':
             if not arg.train_feeder_args.get('debug', False):
                 existing = glob.glob(arg.model_saved_name + '-*.pt')
+                # Protect the resume target from cleanup
+                if arg.resume:
+                    resume_abs = os.path.abspath(arg.resume)
+                    existing = [f for f in existing if os.path.abspath(f) != resume_abs]
                 if existing:
                     if arg.overwrite:
                         for f in existing:
@@ -192,6 +196,15 @@ class Processor():
                     else:
                         print(f'WARNING: {len(existing)} checkpoints exist for {arg.model_saved_name}. '
                               f'Use --overwrite True to auto-remove.')
+                # Clean stale eval artifacts when overwriting
+                if arg.overwrite:
+                    eval_dir = os.path.join(arg.work_dir, 'eval_results')
+                    if os.path.isdir(eval_dir):
+                        old_pkls = glob.glob(os.path.join(eval_dir, '*.pkl'))
+                        for f in old_pkls:
+                            os.remove(f)
+                        if old_pkls:
+                            print(f'Removed {len(old_pkls)} old eval artifacts from {eval_dir}')
 
         self.global_step = 0
         self.load_model()
@@ -247,7 +260,7 @@ class Processor():
             # self.global_step = int(arg.weights[:-3].split('-')[-1])
             self.print_log('Load weights from {}.'.format(self.arg.weights))
             if '.pkl' in self.arg.weights:
-                with open(self.arg.weights, 'r') as f:
+                with open(self.arg.weights, 'rb') as f:
                     weights = pickle.load(f)
             else:
                 weights = torch.load(self.arg.weights)
@@ -434,10 +447,17 @@ class Processor():
             torch.save(checkpoint, self.arg.model_saved_name + '-' + str(epoch) + '-' + str(int(self.global_step)) + '.pt')
 
     def eval(self, epoch, save_score=False, loader_name=['test'], wrong_file=None, result_file=None):
-        if wrong_file is not None:
-            f_w = open(wrong_file, 'w')
-        if result_file is not None:
-            f_r = open(result_file, 'w')
+        f_w = open(wrong_file, 'w') if wrong_file is not None else None
+        f_r = open(result_file, 'w') if result_file is not None else None
+        try:
+            self._eval_inner(epoch, save_score, loader_name, f_w, f_r, wrong_file, result_file)
+        finally:
+            if f_w is not None:
+                f_w.close()
+            if f_r is not None:
+                f_r.close()
+
+    def _eval_inner(self, epoch, save_score, loader_name, f_w, f_r, wrong_file, result_file):
         self.model.eval()
         self.print_log('Eval epoch: {}'.format(epoch + 1))
         for ln in loader_name:
@@ -496,7 +516,6 @@ class Processor():
     def start(self):
         if self.arg.phase == 'train':
             self.print_log('Parameters:\n{}\n'.format(str(vars(self.arg))))
-            self.global_step = self.arg.start_epoch * len(self.data_loader['train']) / self.arg.batch_size
             for epoch in range(self.arg.start_epoch, self.arg.num_epoch):
                 is_last = (epoch + 1 == self.arg.num_epoch)
                 save_model = is_last or ((epoch + 1) % self.arg.save_interval == 0)
