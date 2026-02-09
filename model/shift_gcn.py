@@ -19,13 +19,13 @@ def import_class(name):
     return mod
 
 def conv_init(conv):
-    nn.init.kaiming_normal(conv.weight, mode='fan_out')
-    nn.init.constant(conv.bias, 0)
+    nn.init.kaiming_normal_(conv.weight, mode='fan_out')
+    nn.init.constant_(conv.bias, 0)
 
 
 def bn_init(bn, scale):
-    nn.init.constant(bn.weight, scale)
-    nn.init.constant(bn.bias, 0)
+    nn.init.constant_(bn.weight, scale)
+    nn.init.constant_(bn.bias, 0)
 
 
 class tcn(nn.Module):
@@ -60,7 +60,7 @@ class Shift_tcn(nn.Module):
         self.shift_out = Shift(channel=out_channels, stride=stride, init_scale=1)
 
         self.temporal_linear = nn.Conv2d(in_channels, out_channels, 1)
-        nn.init.kaiming_normal(self.temporal_linear.weight, mode='fan_out')
+        nn.init.kaiming_normal_(self.temporal_linear.weight, mode='fan_out')
 
     def forward(self, x):
         x = self.bn(x)
@@ -91,10 +91,10 @@ class Shift_gcn(nn.Module):
         nn.init.normal_(self.Linear_weight, 0,math.sqrt(1.0/out_channels))
 
         self.Linear_bias = nn.Parameter(torch.zeros(1,1,out_channels,requires_grad=True,device='cuda'),requires_grad=True)
-        nn.init.constant(self.Linear_bias, 0)
+        nn.init.constant_(self.Linear_bias, 0)
 
         self.Feature_Mask = nn.Parameter(torch.ones(1,num_point,in_channels, requires_grad=True,device='cuda'),requires_grad=True)
-        nn.init.constant(self.Feature_Mask, 0)
+        nn.init.constant_(self.Feature_Mask, 0)
 
         self.bn = nn.BatchNorm1d(num_point*out_channels)
         self.relu = nn.ReLU()
@@ -187,7 +187,7 @@ class Model(nn.Module):
         self.l10 = TCN_GCN_unit(256, 256, A, num_point=num_point)
 
         self.fc = nn.Linear(256, num_class)
-        nn.init.normal(self.fc.weight, 0, math.sqrt(2. / num_class))
+        nn.init.normal_(self.fc.weight, 0, math.sqrt(2. / num_class))
         bn_init(self.data_bn, 1)
 
     def forward(self, x):

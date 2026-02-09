@@ -10,7 +10,7 @@
 | 模型參數化 (`model/shift_gcn.py`) | ✅ 完成 | `num_point` 可設定 |
 | 前處理修改 (`data_gen/preprocess.py`) | ✅ 完成 | 支援多關節中心平均 |
 | 資料生成腳本 (`data_gen/mediapipe_gendata.py`) | ✅ 完成 | NTU 模式 + 類別平衡 |
-| 設定檔 (`config/mediapipe/*.yaml`) | ✅ 完成 | 4 種模態 (POC: 10 epochs) |
+| 設定檔 (`config/mediapipe/*.yaml`) | ✅ 完成 | 4 種模態 (production: 140 epochs) |
 | POC Joint 資料生成 | ✅ 完成 | train: 6, val: 4 |
 | Bone 資料生成 | ✅ 完成 | `gen_bone_data_mediapipe.py` |
 | Motion 資料生成 | ✅ 完成 | `gen_motion_data_mediapipe.py` (4 files) |
@@ -18,35 +18,35 @@
 | 模型訓練 (POC) | ✅ 完成 | 4 模態 x 10 epochs, Top-1: 50% |
 | 集成評估 (POC) | ✅ 完成 | Top-1: 50%, Top-5: 100% |
 | 程式碼審查 | ✅ 完成 | 發現關鍵問題待修 (見下方) |
+| 關鍵修復 C1-C7 | ✅ 完成 | 全部 7 個問題已修復 |
 
-### Before Full-Dataset Training — Critical Fixes Required
+### Critical Fixes Applied (C1-C7)
 
-These issues were identified in code review and **must be fixed** before scaling to the full NTU dataset (~56K videos, 140 epochs):
+All issues identified in code review have been **fixed**:
 
-| ID | Severity | File | Issue | Fix |
-|----|----------|------|-------|-----|
-| C1 | Critical | `main.py:423-430` | `volatile=True` deprecated (PyTorch 0.4+), silently ignored → no inference speedup | Replace with `torch.no_grad()` context manager |
-| C2 | Critical | `main.py:180-188` | Interactive `input()` prompt blocks unattended training if work_dir exists | Auto-overwrite or add `--overwrite` CLI flag |
-| C3 | Critical | `config/mediapipe/train_*.yaml` | `num_epoch: 10`, `num_worker: 2` — POC settings | Restore to `num_epoch: 140`, `num_worker: 8-12`, remove `eval_interval: 1` |
-| C4 | Important | `model/shift_gcn.py` | 8x deprecated `nn.init.constant`/`nn.init.kaiming_normal` (no underscore) | Change to `nn.init.constant_`/`nn.init.kaiming_normal_` |
-| C5 | Consider | `data_gen/mediapipe_gendata.py` | Accumulates all data in-memory — may OOM with ~56K videos | Process in chunks or use memory-mapped arrays |
-| C6 | Consider | `data_gen/preprocess.py` | Python-loop normalization — slow for large N | Vectorize with numpy broadcasting |
-| C7 | Consider | `ensemble_mediapipe.py` | Only prints Top-1/Top-5 — insufficient for binary classification | Add precision, recall, F1, confusion matrix |
+| ID | Severity | File | Fix Applied |
+|----|----------|------|-------------|
+| C1 | Critical | `main.py` | Removed `Variable(volatile=True)`, moved tensors inside `torch.no_grad()` |
+| C2 | Critical | `main.py` | Added `--overwrite` CLI flag, removed interactive `input()` prompts |
+| C3 | Critical | `config/mediapipe/train_*.yaml` | Restored `num_epoch: 140`, `num_worker: 8`, `eval_interval: 5` |
+| C4 | Important | `model/shift_gcn.py` | Added `_` suffix to all 8 `nn.init` calls |
+| C5 | Consider | `data_gen/mediapipe_gendata.py` | Chunk-based processing (5000 videos/chunk) |
+| C6 | Consider | `data_gen/preprocess.py` | Vectorized rotation with `np.dot(person[mask], matrix.T)` |
+| C7 | Consider | `ensemble_mediapipe.py` | Added `classification_report`, confusion matrix |
 
 ### Next Steps
 ```bash
-# 1. Fix critical issues C1-C4 (see table above)
-# 2. Generate full dataset (remove --video_list, set --subsample_ratio appropriately)
+# 1. Generate full dataset (remove --video_list, set --subsample_ratio appropriately)
 conda run -n goldcoin --cwd "D:\Shift-GCN\data_gen" python mediapipe_gendata.py --video_dir "E:\nturgb+d_rgb" --out_dir ../data/mediapipe/ --ntu_mode --subsample_ratio 3 --benchmark xsub
-# 3. Regenerate bone + motion data
+# 2. Regenerate bone + motion data
 conda run -n goldcoin --cwd "D:\Shift-GCN\data_gen" python gen_bone_data_mediapipe.py
 conda run -n goldcoin --cwd "D:\Shift-GCN\data_gen" python gen_motion_data_mediapipe.py
-# 4. Train all 4 models (140 epochs each)
+# 3. Train all 4 models (140 epochs each, use --overwrite True to auto-remove old checkpoints)
 conda run -n goldcoin --cwd "D:\Shift-GCN" python main.py --config ./config/mediapipe/train_joint.yaml
 conda run -n goldcoin --cwd "D:\Shift-GCN" python main.py --config ./config/mediapipe/train_bone.yaml
 conda run -n goldcoin --cwd "D:\Shift-GCN" python main.py --config ./config/mediapipe/train_joint_motion.yaml
 conda run -n goldcoin --cwd "D:\Shift-GCN" python main.py --config ./config/mediapipe/train_bone_motion.yaml
-# 5. Ensemble evaluation
+# 4. Ensemble evaluation (now includes classification_report + confusion matrix)
 conda run -n goldcoin --cwd "D:\Shift-GCN" python ensemble_mediapipe.py
 ```
 
@@ -93,22 +93,26 @@ conda run -n goldcoin --cwd "D:\Shift-GCN" python ensemble_mediapipe.py
 - DLL loading: torch lib and CUDA bin directories must be on PATH (conda activation handles this)
 
 ## Conda Environment
-- Use `goldcoin` conda env: has mediapipe, opencv, numpy, torch
+- Use `goldcoin` conda env: has mediapipe, opencv, numpy, torch, sklearn
 - Run scripts via: `conda run -n goldcoin --cwd "D:\Shift-GCN\data_gen" python script.py`
 - `conda run` does NOT support multiline `-c` scripts — write a temp .py file instead
 - `conda run` may fail with UnicodeEncodeError on zh_TW locale (cp950 codec) — bypass with direct Python invocation for CUDA builds
 - On Windows/git-bash: use forward slashes in Python string paths (`D:/Shift-GCN/...`) to avoid `\t`/`\n` escape issues
 
-## Code Fixes Applied (This Session)
-- `model/Temporal_shift/cuda/shift.py`: Added `input = input.contiguous()` in `ShiftFunction.forward()` — CUDA kernel requires contiguous memory layout
-- `model/Temporal_shift/cuda/shift.py`: Changed `ctx.saved_variables` to `ctx.saved_tensors` — deprecated API since PyTorch 0.4
-- `config/mediapipe/train_*.yaml` (all 4): Set `num_epoch: 10`, `num_worker: 2`, `eval_interval: 1` for POC (must restore for production)
+## Code Fixes Applied
+- `shift.py`: `input.contiguous()` in forward + `ctx.saved_tensors` (deprecated API)
+- C1: eval loop uses `torch.no_grad()` instead of `Variable(volatile=True)`
+- C2: `--overwrite` CLI flag replaces interactive `input()` prompts
+- C4: all `nn.init` calls use `_` suffix
+- C5: `_extract_and_save` processes in chunks (default 5000 videos/chunk)
+- C6: rotation loops vectorized with `np.dot(person[mask], matrix.T)`
+- C7: `ensemble_mediapipe.py` requires `sklearn` for classification_report
 
-## Known Deprecations (upstream, not yet fixed)
+## Known Deprecations (all fixed)
 - `np.int` removed in numpy — use `int` (fixed in Shift_gcn)
 - `yaml.load(f)` needs `Loader=yaml.FullLoader` (fixed in main.py)
-- `nn.init.constant` / `nn.init.kaiming_normal` → use `_` suffix variants (unfixed upstream, 8 occurrences in `shift_gcn.py`)
-- `volatile=True` in `Variable()` — deprecated since PyTorch 0.4 (unfixed in `main.py:423-430`)
+- `nn.init.constant` / `nn.init.kaiming_normal` → use `_` suffix variants (fixed: C4)
+- `volatile=True` in `Variable()` — deprecated since PyTorch 0.4 (fixed: C1)
 
 ## Data Pipeline
 - Joint data: `*_gendata.py` → `(N, 3, T, V, M)` .npy files

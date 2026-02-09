@@ -140,6 +140,9 @@ def get_parser():
     parser.add_argument(
         '--nesterov', type=str2bool, default=False, help='use nesterov or not')
     parser.add_argument(
+        '--overwrite', type=str2bool, default=False,
+        help='overwrite existing work_dir without prompting')
+    parser.add_argument(
         '--batch-size', type=int, default=256, help='training batch size')
     parser.add_argument(
         '--test-batch-size', type=int, default=256, help='test batch size')
@@ -178,14 +181,12 @@ class Processor():
         if arg.phase == 'train':
             if not arg.train_feeder_args['debug']:
                 if os.path.isdir(arg.model_saved_name):
-                    print('log_dir: ', arg.model_saved_name, 'already exist')
-                    answer = input('delete it? y/n:')
-                    if answer == 'y':
+                    if arg.overwrite:
                         shutil.rmtree(arg.model_saved_name)
-                        print('Dir removed: ', arg.model_saved_name)
-                        input('Refresh the website of tensorboard by pressing any keys')
+                        print(f'Dir removed (--overwrite): {arg.model_saved_name}')
                     else:
-                        print('Dir not removed: ', arg.model_saved_name)
+                        print(f'WARNING: {arg.model_saved_name} already exists. '
+                              f'Use --overwrite True to auto-remove.')
 
         self.global_step = 0
         self.load_model()
@@ -420,28 +421,21 @@ class Processor():
             step = 0
             process = tqdm(self.data_loader[ln])
             for batch_idx, (data, label, index) in enumerate(process):
-                data = Variable(
-                    data.float().cuda(self.output_device),
-                    requires_grad=False,
-                    volatile=True)
-                label = Variable(
-                    label.long().cuda(self.output_device),
-                    requires_grad=False,
-                    volatile=True)
-
                 with torch.no_grad():
+                    data = data.float().cuda(self.output_device)
+                    label = label.long().cuda(self.output_device)
                     output = self.model(data)
+                    loss = self.loss(output, label)
 
-                loss = self.loss(output, label)
-                score_frag.append(output.data.cpu().numpy())
-                loss_value.append(loss.data.cpu().numpy())
+                score_frag.append(output.cpu().numpy())
+                loss_value.append(loss.cpu().numpy())
 
-                _, predict_label = torch.max(output.data, 1)
+                _, predict_label = torch.max(output, 1)
                 step += 1
 
                 if wrong_file is not None or result_file is not None:
                     predict = list(predict_label.cpu().numpy())
-                    true = list(label.data.cpu().numpy())
+                    true = list(label.cpu().numpy())
                     for i, x in enumerate(predict):
                         if result_file is not None:
                             f_r.write(str(x) + ',' + str(true[i]) + '\n')

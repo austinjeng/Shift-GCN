@@ -189,18 +189,23 @@ def _subsample_negatives(videos, ratio, seed):
     return combined
 
 
-def _extract_and_save(videos, out_path, part, max_frame=300):
+def _extract_and_save(videos, out_path, part, max_frame=300, chunk_size=5000):
     """Extract MediaPipe landmarks from videos and save as .npy + .pkl.
+
+    Processes videos in chunks to avoid OOM with large datasets.
 
     Args:
         videos: list of (video_path, label) tuples.
         out_path: output directory.
         part: 'train' or 'val'.
         max_frame: maximum frames per video.
+        chunk_size: number of videos per processing chunk.
     """
     sample_name = []
     sample_label = []
-    sample_data = []
+    chunk_files = []
+    chunk_idx = 0
+    chunk_data = []
 
     for vpath, label in tqdm(videos, desc=f'Extracting poses ({part})'):
         data = extract_landmarks(vpath, max_frame=max_frame)
@@ -208,28 +213,57 @@ def _extract_and_save(videos, out_path, part, max_frame=300):
             continue
         sample_name.append(os.path.basename(vpath))
         sample_label.append(label)
-        sample_data.append(data)
+        chunk_data.append(data)
 
-    if len(sample_data) == 0:
+        if len(chunk_data) >= chunk_size:
+            chunk_file = _save_chunk(chunk_data, out_path, part, chunk_idx, max_frame)
+            chunk_files.append(chunk_file)
+            chunk_idx += 1
+            chunk_data = []
+
+    # Save remaining samples
+    if chunk_data:
+        chunk_file = _save_chunk(chunk_data, out_path, part, chunk_idx, max_frame)
+        chunk_files.append(chunk_file)
+
+    if not chunk_files:
         print(f'No valid samples found for {part}.')
         return
 
-    N = len(sample_data)
-    fp = np.zeros((N, 3, max_frame, num_joint, max_body_true), dtype=np.float32)
-    for i, d in enumerate(sample_data):
-        T = min(d.shape[1], max_frame)
-        fp[i, :, :T, :, :] = d[:, :T, :, :]
+    # Concatenate all chunks
+    if len(chunk_files) == 1:
+        fp = np.load(chunk_files[0])
+    else:
+        fp = np.concatenate([np.load(f) for f in chunk_files], axis=0)
 
-    fp = pre_normalization(fp, zaxis=[23, 11], xaxis=[12, 11], center_joint=[23, 24])
+    # Clean up temp chunk files
+    for f in chunk_files:
+        os.remove(f)
 
     np.save(os.path.join(out_path, f'{part}_data_joint.npy'), fp)
     with open(os.path.join(out_path, f'{part}_label.pkl'), 'wb') as f:
         pickle.dump((sample_name, sample_label), f)
 
+    N = len(sample_name)
     n_pos = sum(1 for l in sample_label if l == 1)
     n_neg = sum(1 for l in sample_label if l == 0)
     print(f'Saved {part}: {N} samples (falling={n_pos}, non-falling={n_neg})')
     print(f'  data shape: {fp.shape}')
+
+
+def _save_chunk(chunk_data, out_path, part, chunk_idx, max_frame):
+    """Pack a list of extracted landmark arrays into a normalized .npy chunk file."""
+    N = len(chunk_data)
+    fp = np.zeros((N, 3, max_frame, num_joint, max_body_true), dtype=np.float32)
+    for i, d in enumerate(chunk_data):
+        T = min(d.shape[1], max_frame)
+        fp[i, :, :T, :, :] = d[:, :T, :, :]
+
+    fp = pre_normalization(fp, zaxis=[23, 11], xaxis=[12, 11], center_joint=[23, 24])
+
+    chunk_file = os.path.join(out_path, f'_tmp_{part}_chunk{chunk_idx}.npy')
+    np.save(chunk_file, fp)
+    return chunk_file
 
 
 def gendata_ntu(video_dir, out_path, falling_action=43, benchmark='xsub',

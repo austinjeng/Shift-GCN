@@ -68,11 +68,8 @@ def pre_normalization(data, zaxis=[0, 1], xaxis=[8, 4], center_joint=1):
         for i_p, person in enumerate(skeleton):
             if person.sum() == 0:
                 continue
-            for i_f, frame in enumerate(person):
-                if frame.sum() == 0:
-                    continue
-                for i_j, joint in enumerate(frame):
-                    s[i_s, i_p, i_f, i_j] = np.dot(matrix_z, joint)
+            mask = (person.sum(-1) != 0)  # (T, V)
+            s[i_s, i_p, mask] = np.dot(person[mask], matrix_z.T)
 
     print(
         'parallel the bone between right shoulder(jpt 8) and left shoulder(jpt 4) of the first person to the x axis')
@@ -87,11 +84,8 @@ def pre_normalization(data, zaxis=[0, 1], xaxis=[8, 4], center_joint=1):
         for i_p, person in enumerate(skeleton):
             if person.sum() == 0:
                 continue
-            for i_f, frame in enumerate(person):
-                if frame.sum() == 0:
-                    continue
-                for i_j, joint in enumerate(frame):
-                    s[i_s, i_p, i_f, i_j] = np.dot(matrix_x, joint)
+            mask = (person.sum(-1) != 0)  # (T, V)
+            s[i_s, i_p, mask] = np.dot(person[mask], matrix_x.T)
 
     data = np.transpose(s, [0, 4, 2, 3, 1])
     return data
