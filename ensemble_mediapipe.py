@@ -7,14 +7,10 @@ from sklearn.metrics import classification_report, confusion_matrix
 
 label = open('./data/mediapipe/val_label.pkl', 'rb')
 label = np.array(pickle.load(label))
-r1 = open('./work_dir/mediapipe_ShiftGCN_joint/eval_results/best_acc.pkl', 'rb')
-r1 = list(pickle.load(r1).items())
-r2 = open('./work_dir/mediapipe_ShiftGCN_bone/eval_results/best_acc.pkl', 'rb')
-r2 = list(pickle.load(r2).items())
-r3 = open('./work_dir/mediapipe_ShiftGCN_joint_motion/eval_results/best_acc.pkl', 'rb')
-r3 = list(pickle.load(r3).items())
-r4 = open('./work_dir/mediapipe_ShiftGCN_bone_motion/eval_results/best_acc.pkl', 'rb')
-r4 = list(pickle.load(r4).items())
+r1 = pickle.load(open('./work_dir/mediapipe_ShiftGCN_joint/eval_results/best_acc.pkl', 'rb'))
+r2 = pickle.load(open('./work_dir/mediapipe_ShiftGCN_bone/eval_results/best_acc.pkl', 'rb'))
+r3 = pickle.load(open('./work_dir/mediapipe_ShiftGCN_joint_motion/eval_results/best_acc.pkl', 'rb'))
+r4 = pickle.load(open('./work_dir/mediapipe_ShiftGCN_bone_motion/eval_results/best_acc.pkl', 'rb'))
 
 alpha = [0.6, 0.6, 0.4, 0.4]
 
@@ -22,11 +18,12 @@ right_num = total_num = right_num_5 = 0
 all_preds = []
 all_labels = []
 for i in tqdm(range(len(label[0]))):
-    _, l = label[:, i]
-    _, r11 = r1[i]
-    _, r22 = r2[i]
-    _, r33 = r3[i]
-    _, r44 = r4[i]
+    name = label[0][i]
+    l = label[1][i]
+    r11 = r1[name]
+    r22 = r2[name]
+    r33 = r3[name]
+    r44 = r4[name]
     r = r11 * alpha[0] + r22 * alpha[1] + r33 * alpha[2] + r44 * alpha[3]
     rank_5 = r.argsort()[-5:]
     right_num_5 += int(int(l) in rank_5)

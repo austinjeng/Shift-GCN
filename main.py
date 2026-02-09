@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 from __future__ import print_function
 import argparse
+import glob
 import os
 import time
 import numpy as np
@@ -15,7 +16,7 @@ from torch.autograd import Variable
 from tqdm import tqdm
 # from tensorboardX import SummaryWriter
 import shutil
-from torch.optim.lr_scheduler import ReduceLROnPlateau, MultiStepLR
+from torch.optim.lr_scheduler import MultiStepLR
 import random
 import inspect
 import torch.backends.cudnn as cudnn
@@ -161,6 +162,8 @@ def get_parser():
         type=float,
         default=0.0005,
         help='weight decay for optimizer')
+    parser.add_argument('--resume', default=None, type=str,
+                        help='Path to checkpoint .pt file to resume training from')
     parser.add_argument('--only_train_part', default=True)
     parser.add_argument('--only_train_epoch', default=0)
     parser.add_argument('--warm_up_epoch', default=0)
@@ -179,13 +182,15 @@ class Processor():
         self.arg = arg
         self.save_arg()
         if arg.phase == 'train':
-            if not arg.train_feeder_args['debug']:
-                if os.path.isdir(arg.model_saved_name):
+            if not arg.train_feeder_args.get('debug', False):
+                existing = glob.glob(arg.model_saved_name + '-*.pt')
+                if existing:
                     if arg.overwrite:
-                        shutil.rmtree(arg.model_saved_name)
-                        print(f'Dir removed (--overwrite): {arg.model_saved_name}')
+                        for f in existing:
+                            os.remove(f)
+                        print(f'Removed {len(existing)} old checkpoints matching {arg.model_saved_name}-*.pt')
                     else:
-                        print(f'WARNING: {arg.model_saved_name} already exists. '
+                        print(f'WARNING: {len(existing)} checkpoints exist for {arg.model_saved_name}. '
                               f'Use --overwrite True to auto-remove.')
 
         self.global_step = 0
@@ -194,6 +199,22 @@ class Processor():
         self.load_data()
         self.lr = self.arg.base_lr
         self.best_acc = 0
+
+        if self.arg.resume and os.path.isfile(self.arg.resume):
+            self.print_log('Resuming from checkpoint: {}'.format(self.arg.resume))
+            checkpoint = torch.load(self.arg.resume)
+            if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+                self.model.load_state_dict(checkpoint['model_state_dict'])
+                self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+                self.arg.start_epoch = checkpoint['epoch'] + 1
+                self.global_step = checkpoint['global_step']
+                self.best_acc = checkpoint['best_acc']
+                self.print_log('  Resumed: epoch={}, global_step={}, best_acc={:.4f}'.format(
+                    self.arg.start_epoch, self.global_step, self.best_acc))
+            else:
+                self.print_log('  WARNING: Legacy checkpoint (bare state_dict). '
+                               'Loading weights only, not optimizer/epoch state.')
+                self.model.load_state_dict(checkpoint)
 
     def load_data(self):
         Feeder = import_class(self.arg.feeder)
@@ -230,6 +251,9 @@ class Processor():
                     weights = pickle.load(f)
             else:
                 weights = torch.load(self.arg.weights)
+
+            if isinstance(weights, dict) and 'model_state_dict' in weights:
+                weights = weights['model_state_dict']
 
             weights = OrderedDict(
                 [[k.split('module.')[-1],
@@ -290,10 +314,7 @@ class Processor():
         else:
             raise ValueError()
 
-        self.lr_scheduler = ReduceLROnPlateau(self.optimizer, mode='min', factor=0.1,
-                                              patience=10, verbose=True,
-                                              threshold=1e-4, threshold_mode='rel',
-                                              cooldown=0)
+
 
     def save_arg(self):
         # save arg
@@ -403,7 +424,14 @@ class Processor():
             weights = OrderedDict([[k.split('module.')[-1],
                                     v.cpu()] for k, v in state_dict.items()])
 
-            torch.save(weights, self.arg.model_saved_name + '-' + str(epoch) + '-' + str(int(self.global_step)) + '.pt')
+            checkpoint = {
+                'model_state_dict': weights,
+                'optimizer_state_dict': self.optimizer.state_dict(),
+                'epoch': epoch,
+                'global_step': self.global_step,
+                'best_acc': self.best_acc,
+            }
+            torch.save(checkpoint, self.arg.model_saved_name + '-' + str(epoch) + '-' + str(int(self.global_step)) + '.pt')
 
     def eval(self, epoch, save_score=False, loader_name=['test'], wrong_file=None, result_file=None):
         if wrong_file is not None:
@@ -449,8 +477,7 @@ class Processor():
                 score_dict = dict(
                     zip(self.data_loader[ln].dataset.sample_name, score))
 
-                with open('./work_dir/' + arg.Experiment_name + '/eval_results/best_acc' +'.pkl'.format(
-                        epoch, accuracy), 'wb') as f:
+                with open('./work_dir/' + self.arg.Experiment_name + '/eval_results/best_acc.pkl', 'wb') as f:
                     pickle.dump(score_dict, f)
 
             print('Eval Accuracy: ', accuracy, ' model: ', self.arg.model_saved_name)
@@ -463,8 +490,7 @@ class Processor():
                 self.print_log('\tTop{}: {:.2f}%'.format(
                     k, 100 * self.data_loader[ln].dataset.top_k(score, k)))
 
-            with open('./work_dir/' + arg.Experiment_name + '/eval_results/epoch_' + str(epoch) + '_' + str(accuracy) + '.pkl'.format(
-                    epoch, accuracy), 'wb') as f:
+            with open('./work_dir/' + self.arg.Experiment_name + '/eval_results/epoch_' + str(epoch) + '_' + str(accuracy) + '.pkl', 'wb') as f:
                 pickle.dump(score_dict, f)
 
     def start(self):
@@ -472,18 +498,21 @@ class Processor():
             self.print_log('Parameters:\n{}\n'.format(str(vars(self.arg))))
             self.global_step = self.arg.start_epoch * len(self.data_loader['train']) / self.arg.batch_size
             for epoch in range(self.arg.start_epoch, self.arg.num_epoch):
+                is_last = (epoch + 1 == self.arg.num_epoch)
+                save_model = is_last or ((epoch + 1) % self.arg.save_interval == 0)
 
-                self.train(epoch, save_model=True)
+                self.train(epoch, save_model=save_model)
 
-                self.eval(
-                    epoch,
-                    save_score=self.arg.save_score,
-                    loader_name=['test'])
+                if is_last or ((epoch + 1) % self.arg.eval_interval == 0):
+                    self.eval(
+                        epoch,
+                        save_score=self.arg.save_score,
+                        loader_name=['test'])
 
             print('best accuracy: ', self.best_acc, ' model_name: ', self.arg.model_saved_name)
 
         elif self.arg.phase == 'test':
-            if not self.arg.test_feeder_args['debug']:
+            if not self.arg.test_feeder_args.get('debug', False):
                 wf = self.arg.model_saved_name + '_wrong.txt'
                 rf = self.arg.model_saved_name + '_right.txt'
             else:

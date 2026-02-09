@@ -19,6 +19,7 @@
 | 集成評估 (POC) | ✅ 完成 | Top-1: 50%, Top-5: 100% |
 | 程式碼審查 | ✅ 完成 | 發現關鍵問題待修 (見下方) |
 | 關鍵修復 C1-C7 | ✅ 完成 | 全部 7 個問題已修復 |
+| ML-Ops 修復 M1-M8 | ✅ 完成 | interval/resume/cleanup/ensemble 等 8 項 |
 
 ### Critical Fixes Applied (C1-C7)
 
@@ -34,6 +35,19 @@ All issues identified in code review have been **fixed**:
 | C6 | Consider | `data_gen/preprocess.py` | Vectorized rotation with `np.dot(person[mask], matrix.T)` |
 | C7 | Consider | `ensemble_mediapipe.py` | Added `classification_report`, confusion matrix |
 
+### ML-Ops Fixes Applied (M1-M8)
+
+| ID | Priority | File | Fix Applied |
+|----|----------|------|-------------|
+| M1 | HIGH | `main.py` | Honor `eval_interval` and `save_interval` in training loop |
+| M2 | HIGH | `mediapipe_gendata.py` | Stop class-balancing validation split (train only) |
+| M3 | HIGH | `main.py` | Resume-safe checkpoints (`--resume`, full state dict) |
+| M4 | MEDIUM | `main.py` | Fix `KeyError` on missing `debug` key (`.get()`) |
+| M5 | MEDIUM | `ensemble_mediapipe.py` | Dict-based sample alignment (not index-based) |
+| M6 | LOW | `main.py` | Glob-based checkpoint cleanup (not `shutil.rmtree`) |
+| M7 | LOW | `main.py` | Removed dead `ReduceLROnPlateau` scheduler |
+| M8 | LOW | `main.py` | Replaced global `arg` with `self.arg` in eval |
+
 ### Next Steps
 ```bash
 # 1. Generate full dataset (remove --video_list, set --subsample_ratio appropriately)
@@ -42,10 +56,11 @@ conda run -n goldcoin --cwd "D:\Shift-GCN\data_gen" python mediapipe_gendata.py 
 conda run -n goldcoin --cwd "D:\Shift-GCN\data_gen" python gen_bone_data_mediapipe.py
 conda run -n goldcoin --cwd "D:\Shift-GCN\data_gen" python gen_motion_data_mediapipe.py
 # 3. Train all 4 models (140 epochs each, use --overwrite True to auto-remove old checkpoints)
-conda run -n goldcoin --cwd "D:\Shift-GCN" python main.py --config ./config/mediapipe/train_joint.yaml
-conda run -n goldcoin --cwd "D:\Shift-GCN" python main.py --config ./config/mediapipe/train_bone.yaml
-conda run -n goldcoin --cwd "D:\Shift-GCN" python main.py --config ./config/mediapipe/train_joint_motion.yaml
-conda run -n goldcoin --cwd "D:\Shift-GCN" python main.py --config ./config/mediapipe/train_bone_motion.yaml
+conda run -n goldcoin --cwd "D:\Shift-GCN" python main.py --config ./config/mediapipe/train_joint.yaml --overwrite True
+conda run -n goldcoin --cwd "D:\Shift-GCN" python main.py --config ./config/mediapipe/train_bone.yaml --overwrite True
+conda run -n goldcoin --cwd "D:\Shift-GCN" python main.py --config ./config/mediapipe/train_joint_motion.yaml --overwrite True
+conda run -n goldcoin --cwd "D:\Shift-GCN" python main.py --config ./config/mediapipe/train_bone_motion.yaml --overwrite True
+# To resume after crash: --resume ./save_models/mediapipe_ShiftGCN_joint-EPOCH-STEP.pt
 # 4. Ensemble evaluation (now includes classification_report + confusion matrix)
 conda run -n goldcoin --cwd "D:\Shift-GCN" python ensemble_mediapipe.py
 ```
@@ -107,6 +122,20 @@ conda run -n goldcoin --cwd "D:\Shift-GCN" python ensemble_mediapipe.py
 - C5: `_extract_and_save` processes in chunks (default 5000 videos/chunk)
 - C6: rotation loops vectorized with `np.dot(person[mask], matrix.T)`
 - C7: `ensemble_mediapipe.py` requires `sklearn` for classification_report
+- M1: Training loop honors `eval_interval` and `save_interval` (no more every-epoch saves)
+- M2: Validation split no longer class-balanced (preserves natural distribution)
+- M3: `--resume <checkpoint.pt>` restores model, optimizer, epoch, global_step, best_acc
+- M4: `debug` key accessed via `.get('debug', False)` to avoid KeyError
+- M5: Ensemble uses dict-based sample lookup (robust to ordering differences)
+- M6: Checkpoint cleanup uses `glob.glob()` instead of `shutil.rmtree()` (matches flat .pt files)
+- M7: Removed unused `ReduceLROnPlateau` scheduler
+- M8: Eval methods use `self.arg` instead of module-level `arg`
+
+## Checkpoint Format
+- Checkpoints are dicts: `{model_state_dict, optimizer_state_dict, epoch, global_step, best_acc}`
+- `--weights` auto-detects new dict format vs legacy bare state_dict
+- `--resume <path.pt>` restores full training state (model + optimizer + epoch + best_acc)
+- Checkpoint files: `./save_models/<Experiment_name>-<epoch>-<global_step>.pt` (flat files, not directories)
 
 ## Known Deprecations (all fixed)
 - `np.int` removed in numpy — use `int` (fixed in Shift_gcn)
@@ -136,7 +165,7 @@ conda run -n goldcoin --cwd "D:\Shift-GCN" python ensemble_mediapipe.py
 - POC test list: `data_gen/poc_videos.txt` (10 videos, balanced fall/non-fall across train/val)
 - Binary labels: A043 (falling) = 1, everything else = 0
 - Cross-subject or cross-view split via `--benchmark xsub|xview`
-- Class balancing via `--subsample_ratio` (negatives subsampled to ratio * positives)
+- Class balancing via `--subsample_ratio` (train only; val keeps natural distribution)
 - Output: `{train,val}_data_joint.npy` + `{train,val}_label.pkl` — feeds directly into existing config/mediapipe pipeline
 - Without `--ntu_mode`, original generic label_map behavior is preserved
 
@@ -156,3 +185,4 @@ conda run -n goldcoin --cwd "D:\Shift-GCN" python ensemble_mediapipe.py
 - Expected POC output: train (6, 3, 300, 33, 1) with labels {0,1}, val (4, 3, 300, 33, 1) with labels {0,1}
 - `python main.py --config ./config/mediapipe/train_joint.yaml` — train MediaPipe joint model
 - Ensemble: `python ensemble_mediapipe.py` (weights: 0.6 joint, 0.6 bone, 0.4 joint_motion, 0.4 bone_motion)
+- Resume training: `python main.py --config ./config/mediapipe/train_joint.yaml --resume ./save_models/mediapipe_ShiftGCN_joint-EPOCH-STEP.pt`

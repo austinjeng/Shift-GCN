@@ -331,9 +331,8 @@ def gendata_ntu(video_dir, out_path, falling_action=43, benchmark='xsub',
 
     if subsample_ratio > 0:
         train_videos = _subsample_negatives(train_videos, subsample_ratio, seed)
-        val_videos = _subsample_negatives(val_videos, subsample_ratio, seed)
-        print(f'After subsampling (ratio={subsample_ratio}):')
-        print(f'  train={len(train_videos)}, val={len(val_videos)}')
+        print(f'After subsampling train (ratio={subsample_ratio}):')
+        print(f'  train={len(train_videos)} (balanced), val={len(val_videos)} (natural distribution)')
 
     _extract_and_save(train_videos, out_path, 'train', max_frame=max_frame)
     _extract_and_save(val_videos, out_path, 'val', max_frame=max_frame)
