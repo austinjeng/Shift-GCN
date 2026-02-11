@@ -21,6 +21,7 @@
 | 關鍵修復 C1-C7 | ✅ 完成 | 全部 7 個問題已修復 |
 | ML-Ops 修復 M1-M8 | ✅ 完成 | interval/resume/cleanup/ensemble 等 8 項 |
 | 穩健性修復 P1-P3 | ✅ 完成 | resume 安全、記憶體優化、檔案處理 (6 項) |
+| 技術債清理 D1-D2 | ✅ 完成 | 目錄建立冪等化、移除棄用 Variable |
 
 ### Critical Fixes Applied (C1-C7)
 
@@ -59,6 +60,13 @@ All issues identified in code review have been **fixed**:
 | P2a | MEDIUM | `main.py` | `--overwrite` also cleans `eval_results/*.pkl` |
 | P3a | LOW | `main.py` | Eval file handles wrapped in `try/finally` via `_eval_inner` |
 | P3b | LOW | `main.py` | `.pkl` weights opened in `'rb'` (binary mode) |
+
+### Tech Debt Cleanup (D1-D2)
+
+| ID | Priority | File | Fix Applied |
+|----|----------|------|-------------|
+| D1 | LOW | `main.py` | `eval_results/` dir creation uses `exist_ok=True` (idempotent) |
+| D2 | LOW | `main.py` | Removed deprecated `torch.autograd.Variable` wrapper from training loop |
 
 ### Next Steps
 ```bash
@@ -148,6 +156,8 @@ conda run -n goldcoin --cwd "D:\Shift-GCN" python ensemble_mediapipe.py
 - P2a: `--overwrite` cleans `eval_results/*.pkl` alongside checkpoint `.pt` files
 - P3a: Eval `wrong_file`/`result_file` handles closed in `finally` block
 - P3b: `.pkl` weight file opened with `'rb'` instead of `'r'`
+- D1: `eval_results/` dir creation uses `os.makedirs(..., exist_ok=True)` instead of conditional check
+- D2: Removed `from torch.autograd import Variable`; training loop uses plain tensors directly
 
 ## Checkpoint Format
 - Checkpoints are dicts: `{model_state_dict, optimizer_state_dict, epoch, global_step, best_acc}`
@@ -161,6 +171,7 @@ conda run -n goldcoin --cwd "D:\Shift-GCN" python ensemble_mediapipe.py
 - `yaml.load(f)` needs `Loader=yaml.FullLoader` (fixed in main.py)
 - `nn.init.constant` / `nn.init.kaiming_normal` → use `_` suffix variants (fixed: C4)
 - `volatile=True` in `Variable()` — deprecated since PyTorch 0.4 (fixed: C1)
+- `Variable()` wrapper itself — unnecessary since PyTorch 0.4 (fixed: D2)
 
 ## Data Pipeline
 - Joint data: `*_gendata.py` → `(N, 3, T, V, M)` .npy files

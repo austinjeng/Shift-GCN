@@ -12,7 +12,6 @@ from collections import OrderedDict
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.autograd import Variable
 from tqdm import tqdm
 # from tensorboardX import SummaryWriter
 import shutil
@@ -332,9 +331,8 @@ class Processor():
     def save_arg(self):
         # save arg
         arg_dict = vars(self.arg)
-        if not os.path.exists(self.arg.work_dir):
-            os.makedirs(self.arg.work_dir)
-            os.makedirs(self.arg.work_dir+'/eval_results')
+        os.makedirs(self.arg.work_dir, exist_ok=True)
+        os.makedirs(self.arg.work_dir+'/eval_results', exist_ok=True)
         with open('{}/config.yaml'.format(self.arg.work_dir), 'w') as f:
             yaml.dump(arg_dict, f)
 
@@ -396,8 +394,8 @@ class Processor():
         for batch_idx, (data, label, index) in enumerate(process):
             self.global_step += 1
             # get data
-            data = Variable(data.float().cuda(self.output_device), requires_grad=False)
-            label = Variable(label.long().cuda(self.output_device), requires_grad=False)
+            data = data.float().cuda(self.output_device)
+            label = label.long().cuda(self.output_device)
             timer['dataloader'] += self.split_time()
 
             # forward
