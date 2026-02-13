@@ -239,11 +239,14 @@ class Processor():
                 num_workers=self.arg.num_worker,
                 drop_last=True,
                 worker_init_fn=init_seed)
+        # Use fewer workers for test loader on Windows to avoid
+        # multiprocessing pickle failures with large val datasets
+        test_workers = min(self.arg.num_worker, 2) if os.name == 'nt' else self.arg.num_worker
         self.data_loader['test'] = torch.utils.data.DataLoader(
             dataset=Feeder(**self.arg.test_feeder_args),
             batch_size=self.arg.test_batch_size,
             shuffle=False,
-            num_workers=self.arg.num_worker,
+            num_workers=test_workers,
             drop_last=False,
             worker_init_fn=init_seed)
 
