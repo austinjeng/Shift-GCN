@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg
+*.egg-info/
+
+# Build artifacts
+build/
+dist/
+
+# Model checkpoints (large binaries)
+save_models/mediapipe_*.pt
+
+# Training data (large, reproducible)
+data/mediapipe/
+
+# Training work directories
+work_dir/
+
+# IDE / tool config
+.vscode/
+.claude/
+
+# Windows artifacts
+nul
