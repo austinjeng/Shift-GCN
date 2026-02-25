@@ -355,14 +355,15 @@ def run_ensemble_inference(windows, models, ensemble_weights, progress_callback=
     with torch.no_grad():
         for i, (window_data, start, end, num_real) in enumerate(windows):
             mods = derive_modalities(window_data)
-            ensemble_score = np.zeros(2, dtype=np.float64)
+            ensemble_logits = np.zeros(2, dtype=np.float64)
             for mod_name, alpha in zip(MODALITIES, ensemble_weights):
                 x = torch.from_numpy(mods[mod_name]).unsqueeze(0).float().cuda()
                 # x shape: (1, 3, 300, 33, 1)
-                logits = models[mod_name](x)
-                scores = F.softmax(logits, dim=-1).cpu().numpy()[0]
-                ensemble_score += alpha * scores
-            fall_score = float(ensemble_score[1])  # class 1 = fall
+                logits = models[mod_name](x).cpu().numpy()[0]  # raw logits, no softmax
+                ensemble_logits += alpha * logits
+            # Softmax on final ensemble logits to get confidence
+            exp_scores = np.exp(ensemble_logits - ensemble_logits.max())
+            fall_score = float(exp_scores[1] / exp_scores.sum())  # class 1 = fall
             results.append((fall_score, start, end, num_real))
             if progress_callback:
                 progress_callback(i + 1, len(windows))
