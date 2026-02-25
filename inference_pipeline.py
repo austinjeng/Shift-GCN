@@ -599,16 +599,19 @@ def run_pipeline(video_path, output_dir, window_size, stride, threshold,
     fps = landmarks['fps']
     width, height = landmarks['resolution']
 
-    # Stage 2: Pre-normalize
-    print('Stage 2/4: Pre-normalizing...')
+    # Stage 2: Sliding windows on RAW data (before normalization)
+    print('Stage 2/4: Creating sliding windows...')
     world_data = landmarks['world']  # (3, T, 33, 1)
-    data_batch = world_data[np.newaxis, ...]  # (1, 3, T, 33, 1)
-    data_batch = pre_normalize(data_batch)
-    normalized = data_batch[0]  # (3, T, 33, 1)
+    windows = create_sliding_windows(world_data, window_size, stride)
 
-    # Stage 3: Sliding windows + inference
-    print('Stage 3/4: Running ensemble inference...')
-    windows = create_sliding_windows(normalized, window_size, stride)
+    # Stage 3: Normalize each window independently + run inference
+    # This matches training exactly: each sample is zero-padded to window_size,
+    # then pre_normalized (which cyclically fills zero-padded frames).
+    print('Stage 3/4: Normalizing windows + running ensemble inference...')
+    num_windows = len(windows)
+    window_batch = np.stack([w[0] for w in windows], axis=0)  # (N, 3, W, 33, 1)
+    window_batch = pre_normalize(window_batch)  # normalize all windows as a batch
+    windows = [(window_batch[i], w[1], w[2], w[3]) for i, w in enumerate(windows)]
 
     # Load models
     models = {}
