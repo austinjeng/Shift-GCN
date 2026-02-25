@@ -309,6 +309,147 @@ def derive_modalities(joint_window):
     }
 
 
+# ---------------------------------------------------------------------------
+# Model loading + ensemble inference
+# ---------------------------------------------------------------------------
+
+def load_model(checkpoint_path):
+    """Load a Shift-GCN model from checkpoint."""
+    from collections import OrderedDict
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from model.shift_gcn import Model
+
+    model = Model(
+        num_class=2,
+        num_point=33,
+        num_person=1,
+        graph='graph.mediapipe_pose.Graph',
+        graph_args={'labeling_mode': 'spatial'},
+        in_channels=3,
+    ).cuda()
+
+    weights = torch.load(checkpoint_path, weights_only=False)
+    if isinstance(weights, dict) and 'model_state_dict' in weights:
+        weights = weights['model_state_dict']
+    weights = OrderedDict(
+        [[k.split('module.')[-1], v.cuda()] for k, v in weights.items()]
+    )
+    model.load_state_dict(weights)
+    model.eval()
+    return model
+
+
+def run_ensemble_inference(windows, models, ensemble_weights, progress_callback=None):
+    """Run 4-model ensemble inference on all windows.
+
+    Args:
+        windows: list of (window_data, start, end, num_real) from create_sliding_windows.
+        models: dict mapping modality name -> loaded Model.
+        ensemble_weights: list of 4 floats [joint, bone, jm, bm].
+        progress_callback: Optional callable(current_window, total_windows).
+
+    Returns:
+        list of (fall_score, start_frame, end_frame, num_real_frames) per window.
+    """
+    results = []
+    with torch.no_grad():
+        for i, (window_data, start, end, num_real) in enumerate(windows):
+            mods = derive_modalities(window_data)
+            ensemble_score = np.zeros(2, dtype=np.float64)
+            for mod_name, alpha in zip(MODALITIES, ensemble_weights):
+                x = torch.from_numpy(mods[mod_name]).unsqueeze(0).float().cuda()
+                # x shape: (1, 3, 300, 33, 1)
+                logits = models[mod_name](x)
+                scores = F.softmax(logits, dim=-1).cpu().numpy()[0]
+                ensemble_score += alpha * scores
+            fall_score = float(ensemble_score[1])  # class 1 = fall
+            results.append((fall_score, start, end, num_real))
+            if progress_callback:
+                progress_callback(i + 1, len(windows))
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Per-frame aggregation + fall detection
+# ---------------------------------------------------------------------------
+
+def aggregate_per_frame(window_results, total_frames):
+    """Map window scores to per-frame scores by averaging overlapping windows."""
+    score_sum = np.zeros(total_frames, dtype=np.float64)
+    score_count = np.zeros(total_frames, dtype=np.float64)
+    for fall_score, start, end, num_real in window_results:
+        real_end = start + num_real
+        score_sum[start:real_end] += fall_score
+        score_count[start:real_end] += 1.0
+    score_count = np.maximum(score_count, 1.0)
+    return score_sum / score_count
+
+
+def detect_fall_intervals(per_frame_scores, threshold, fps):
+    """Find contiguous regions where per-frame score exceeds threshold."""
+    above = per_frame_scores > threshold
+    detections = []
+    in_region = False
+    start = 0
+    for i in range(len(above)):
+        if above[i] and not in_region:
+            start = i
+            in_region = True
+        elif not above[i] and in_region:
+            _add_detection(detections, per_frame_scores, start, i, fps)
+            in_region = False
+    if in_region:
+        _add_detection(detections, per_frame_scores, start, len(above), fps)
+    return detections
+
+
+def _add_detection(detections, scores, start, end, fps):
+    """Helper to create a detection dict for a contiguous fall region."""
+    region_scores = scores[start:end]
+    peak_idx = int(np.argmax(region_scores))
+    def fmt_time(frame):
+        secs = frame / fps
+        mins = int(secs // 60)
+        secs = secs % 60
+        return f'{mins}:{secs:05.2f}'
+    detections.append({
+        'start_frame': int(start),
+        'end_frame': int(end),
+        'start_time': fmt_time(start),
+        'end_time': fmt_time(end),
+        'mean_confidence': float(np.mean(region_scores)),
+        'peak_confidence': float(np.max(region_scores)),
+        'peak_frame': int(start + peak_idx),
+    })
+
+
+# ---------------------------------------------------------------------------
+# JSON report generation
+# ---------------------------------------------------------------------------
+
+def generate_report(video_path, video_info, params, per_frame_scores, detections, flags):
+    """Generate the JSON results report."""
+    n_det = len(detections)
+    if n_det == 0:
+        summary = 'No falls detected.'
+    elif n_det == 1:
+        d = detections[0]
+        summary = (f'1 fall detected at {d["start_time"]}-{d["end_time"]} '
+                   f'(confidence: {d["mean_confidence"]:.2f})')
+    else:
+        parts = [f'{d["start_time"]}-{d["end_time"]}' for d in detections]
+        summary = f'{n_det} falls detected at: {", ".join(parts)}'
+    return {
+        'video_path': os.path.abspath(video_path),
+        'video_info': video_info,
+        'parameters': params,
+        'detections': detections,
+        'per_frame_scores': [round(float(s), 4) for s in per_frame_scores],
+        'flags': flags,
+        'summary': summary,
+    }
+
+
 if __name__ == '__main__':
     args = parse_args()
     if args.cli:
