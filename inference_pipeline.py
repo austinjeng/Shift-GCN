@@ -450,29 +450,415 @@ def generate_report(video_path, video_info, params, per_frame_scores, detections
     }
 
 
+# ---------------------------------------------------------------------------
+# Annotated video renderer
+# ---------------------------------------------------------------------------
+
+# MediaPipe Pose connections for skeleton drawing
+POSE_CONNECTIONS = [
+    (11, 12), (11, 13), (13, 15), (12, 14), (14, 16),  # torso + arms
+    (11, 23), (12, 24), (23, 24),                        # torso to hips
+    (23, 25), (25, 27), (24, 26), (26, 28),              # legs
+    (15, 17), (15, 19), (15, 21), (16, 18), (16, 20), (16, 22),  # hands
+    (27, 29), (27, 31), (28, 30), (28, 32),              # feet
+    (0, 1), (0, 4), (1, 2), (2, 3), (4, 5), (5, 6),     # face
+    (3, 7), (6, 8), (9, 10),                              # ears + mouth
+]
+
+
+def confidence_color(score):
+    """Map score [0,1] to BGR color: green(0) -> yellow(0.3) -> red(0.5+)."""
+    if score < 0.3:
+        # Green to yellow
+        t = score / 0.3
+        return (0, int(255 * (1 - t * 0.5)), int(255 * t))
+    elif score < 0.5:
+        # Yellow to red
+        t = (score - 0.3) / 0.2
+        return (0, int(255 * (1 - t)), int(255))
+    else:
+        # Red
+        return (0, 0, 255)
+
+
+def render_annotated_video(video_path, output_path, pixel_landmarks, per_frame_scores,
+                           detections, fps, threshold, progress_callback=None):
+    """Render annotated output video with skeleton, confidence bar, and fall tinting."""
+    cap = cv2.VideoCapture(video_path)
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    total_frames = len(per_frame_scores)
+
+    bar_height = 40
+    status_height = 30
+    out_height = height + bar_height + status_height
+
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    writer = cv2.VideoWriter(output_path, fourcc, fps, (width, out_height))
+
+    # Precompute fall regions as set of frames for fast lookup
+    fall_frames = set()
+    for d in detections:
+        for f in range(d['start_frame'], d['end_frame']):
+            fall_frames.add(f)
+
+    for frame_idx in range(total_frames):
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        score = per_frame_scores[frame_idx]
+        is_fall = frame_idx in fall_frames
+
+        # 1. Draw skeleton
+        pl = pixel_landmarks[frame_idx]
+        if pl is not None:
+            color = (0, 0, 255) if is_fall else (0, 255, 0)
+            for (a, b) in POSE_CONNECTIONS:
+                if pl[a][2] > 0.3 and pl[b][2] > 0.3:  # visibility threshold
+                    pt1 = (int(pl[a][0]), int(pl[a][1]))
+                    pt2 = (int(pl[b][0]), int(pl[b][1]))
+                    cv2.line(frame, pt1, pt2, color, 2)
+            for j in range(33):
+                if pl[j][2] > 0.3:
+                    cv2.circle(frame, (int(pl[j][0]), int(pl[j][1])), 3, color, -1)
+
+        # 2. Fall tint (semi-transparent red overlay)
+        if is_fall:
+            overlay = frame.copy()
+            cv2.rectangle(overlay, (0, 0), (width, height), (0, 0, 255), -1)
+            cv2.addWeighted(overlay, 0.15, frame, 0.85, 0, frame)
+
+        # 3. Build output frame with bar and status
+        out_frame = np.zeros((out_height, width, 3), dtype=np.uint8)
+        out_frame[:height, :, :] = frame
+
+        # 4. Confidence bar
+        bar_y = height
+        for x in range(width):
+            bar_frame_idx = int(x / width * total_frames)
+            bar_frame_idx = min(bar_frame_idx, total_frames - 1)
+            s = per_frame_scores[bar_frame_idx]
+            c = confidence_color(s)
+            cv2.line(out_frame, (x, bar_y), (x, bar_y + bar_height), c, 1)
+
+        # Playhead marker
+        px = int(frame_idx / max(total_frames - 1, 1) * (width - 1))
+        cv2.line(out_frame, (px, bar_y), (px, bar_y + bar_height), (255, 255, 255), 2)
+
+        # 5. Status strip
+        status_y = bar_y + bar_height
+        cv2.rectangle(out_frame, (0, status_y), (width, out_height), (30, 30, 30), -1)
+        secs = frame_idx / fps
+        time_str = f'{int(secs // 60)}:{secs % 60:05.2f}'
+        label = 'FALL' if is_fall else 'SAFE'
+        label_color = (0, 0, 255) if is_fall else (0, 255, 0)
+        text = f'Frame {frame_idx}/{total_frames}  |  {time_str}  |  {label}  conf: {score:.2f}'
+        cv2.putText(out_frame, text, (10, status_y + 20),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, label_color, 1, cv2.LINE_AA)
+
+        writer.write(out_frame)
+
+        if progress_callback:
+            progress_callback(frame_idx + 1, total_frames)
+
+    cap.release()
+    writer.release()
+
+
+# ---------------------------------------------------------------------------
+# Pipeline orchestrator
+# ---------------------------------------------------------------------------
+
+def run_pipeline(video_path, output_dir, window_size, stride, threshold,
+                 ensemble_weights, checkpoint_paths, progress_callback=None):
+    """Run the full inference pipeline.
+
+    Args:
+        progress_callback: Optional callable(stage, current, total) for progress.
+    Returns:
+        report dict (same as JSON output).
+    """
+    os.makedirs(output_dir, exist_ok=True)
+
+    def cb(stage):
+        def inner(cur, tot):
+            if progress_callback:
+                progress_callback(stage, cur, tot)
+            else:
+                print(f'\r  [{stage}] {cur}/{tot}', end='', flush=True)
+        return inner
+
+    # Stage 1: Extract landmarks
+    print('Stage 1/4: Extracting landmarks...')
+    landmarks = extract_landmarks(video_path, progress_callback=cb('Extracting landmarks'))
+    print()
+
+    total_frames = landmarks['total_frames']
+    fps = landmarks['fps']
+    width, height = landmarks['resolution']
+
+    # Stage 2: Pre-normalize
+    print('Stage 2/4: Pre-normalizing...')
+    world_data = landmarks['world']  # (3, T, 33, 1)
+    data_batch = world_data[np.newaxis, ...]  # (1, 3, T, 33, 1)
+    data_batch = pre_normalize(data_batch)
+    normalized = data_batch[0]  # (3, T, 33, 1)
+
+    # Stage 3: Sliding windows + inference
+    print('Stage 3/4: Running ensemble inference...')
+    windows = create_sliding_windows(normalized, window_size, stride)
+
+    # Load models
+    models = {}
+    for mod_name in MODALITIES:
+        cp = checkpoint_paths[mod_name]
+        print(f'  Loading {mod_name} model from {os.path.basename(cp)}...')
+        models[mod_name] = load_model(cp)
+
+    window_results = run_ensemble_inference(windows, models, ensemble_weights, cb('Inference'))
+    print()
+
+    # Free GPU memory after inference
+    del models
+    torch.cuda.empty_cache()
+
+    # Stage 4: Aggregate + detect + render
+    print('Stage 4/4: Generating output...')
+    per_frame_scores = aggregate_per_frame(window_results, total_frames)
+    detections = detect_fall_intervals(per_frame_scores, threshold, fps)
+
+    flags = []
+    if total_frames < window_size // 2:
+        flags.append('low_confidence_short_video')
+
+    video_info = {
+        'total_frames': total_frames,
+        'fps': fps,
+        'duration_seconds': round(total_frames / fps, 2),
+        'resolution': [width, height],
+    }
+    params = {
+        'window_size': window_size,
+        'stride': stride,
+        'threshold': threshold,
+        'ensemble_weights': ensemble_weights,
+        'num_windows': len(windows),
+    }
+
+    report = generate_report(video_path, video_info, params,
+                             per_frame_scores, detections, flags)
+
+    # Save JSON
+    json_path = os.path.join(output_dir, 'results.json')
+    with open(json_path, 'w') as f:
+        json.dump(report, f, indent=2)
+    print(f'  JSON report saved: {json_path}')
+
+    # Render annotated video
+    video_out_path = os.path.join(output_dir, 'annotated_video.mp4')
+    render_annotated_video(video_path, video_out_path, landmarks['pixel'],
+                           per_frame_scores, detections, fps, threshold,
+                           progress_callback=cb('Rendering'))
+    print(f'\n  Annotated video saved: {video_out_path}')
+
+    print(f'\n{report["summary"]}')
+    return report
+
+
+# ---------------------------------------------------------------------------
+# Tkinter GUI
+# ---------------------------------------------------------------------------
+
+def run_gui(args, checkpoint_paths, ensemble_weights):
+    """Launch the Tkinter GUI for the inference pipeline."""
+    import tkinter as tk
+    from tkinter import filedialog, ttk
+    import threading
+
+    root = tk.Tk()
+    root.title('Shift-GCN Fall Detection')
+    root.resizable(False, False)
+
+    # -- Variables --
+    video_var = tk.StringVar(value=args.video or '')
+    output_var = tk.StringVar(value=args.output_dir)
+    window_var = tk.IntVar(value=args.window_size)
+    stride_var = tk.IntVar(value=args.stride)
+    threshold_var = tk.DoubleVar(value=args.threshold)
+    cp_vars = {}
+    for mod in MODALITIES:
+        cp_vars[mod] = tk.StringVar(value=checkpoint_paths.get(mod, ''))
+
+    # -- Layout --
+    pad = dict(padx=8, pady=4)
+    row = 0
+
+    # Video input
+    tk.Label(root, text='Video:').grid(row=row, column=0, sticky='e', **pad)
+    tk.Entry(root, textvariable=video_var, width=50).grid(row=row, column=1, **pad)
+    tk.Button(root, text='Browse...',
+              command=lambda: video_var.set(
+                  filedialog.askopenfilename(
+                      filetypes=[('Video', '*.mp4 *.avi *.mkv *.mov'), ('All', '*.*')])
+                  or video_var.get()
+              )).grid(row=row, column=2, **pad)
+    row += 1
+
+    # Output dir
+    tk.Label(root, text='Output:').grid(row=row, column=0, sticky='e', **pad)
+    tk.Entry(root, textvariable=output_var, width=50).grid(row=row, column=1, **pad)
+    tk.Button(root, text='Browse...',
+              command=lambda: output_var.set(
+                  filedialog.askdirectory() or output_var.get()
+              )).grid(row=row, column=2, **pad)
+    row += 1
+
+    # Parameters section
+    ttk.Separator(root, orient='horizontal').grid(row=row, column=0, columnspan=3, sticky='ew', pady=8)
+    row += 1
+    tk.Label(root, text='Parameters', font=('', 10, 'bold')).grid(row=row, column=0, columnspan=3)
+    row += 1
+
+    tk.Label(root, text='Window Size:').grid(row=row, column=0, sticky='e', **pad)
+    tk.Spinbox(root, textvariable=window_var, from_=30, to=600, width=8).grid(row=row, column=1, sticky='w', **pad)
+    row += 1
+
+    tk.Label(root, text='Stride:').grid(row=row, column=0, sticky='e', **pad)
+    tk.Spinbox(root, textvariable=stride_var, from_=1, to=600, width=8).grid(row=row, column=1, sticky='w', **pad)
+    row += 1
+
+    tk.Label(root, text='Threshold:').grid(row=row, column=0, sticky='e', **pad)
+    threshold_label = tk.Label(root, text=f'{args.threshold:.2f}')
+    threshold_label.grid(row=row, column=2, sticky='w', **pad)
+    def on_threshold_change(val):
+        threshold_var.set(round(float(val), 2))
+        threshold_label.config(text=f'{float(val):.2f}')
+    tk.Scale(root, from_=0.1, to=0.9, resolution=0.05, orient='horizontal',
+             variable=threshold_var, command=on_threshold_change,
+             showvalue=False, length=200).grid(row=row, column=1, sticky='w', **pad)
+    row += 1
+
+    # Checkpoints section
+    ttk.Separator(root, orient='horizontal').grid(row=row, column=0, columnspan=3, sticky='ew', pady=8)
+    row += 1
+    tk.Label(root, text='Checkpoints (auto-detected)', font=('', 10, 'bold')).grid(row=row, column=0, columnspan=3)
+    row += 1
+
+    for mod in MODALITIES:
+        label = mod.replace('_', ' ').title() + ':'
+        tk.Label(root, text=label).grid(row=row, column=0, sticky='e', **pad)
+        tk.Entry(root, textvariable=cp_vars[mod], width=50).grid(row=row, column=1, **pad)
+        tk.Button(root, text='Browse...',
+                  command=lambda m=mod: cp_vars[m].set(
+                      filedialog.askopenfilename(filetypes=[('Checkpoint', '*.pt')]) or cp_vars[m].get()
+                  )).grid(row=row, column=2, **pad)
+        row += 1
+
+    # Progress section
+    ttk.Separator(root, orient='horizontal').grid(row=row, column=0, columnspan=3, sticky='ew', pady=8)
+    row += 1
+
+    progress = ttk.Progressbar(root, length=400, mode='determinate')
+    progress.grid(row=row, column=0, columnspan=3, **pad)
+    row += 1
+
+    status_var = tk.StringVar(value='Ready')
+    tk.Label(root, textvariable=status_var, anchor='w').grid(row=row, column=0, columnspan=3, sticky='w', **pad)
+    row += 1
+
+    # Run button
+    run_btn = tk.Button(root, text='Run Analysis', font=('', 11, 'bold'))
+    run_btn.grid(row=row, column=0, columnspan=3, pady=12)
+
+    def on_run():
+        video = video_var.get()
+        if not video or not os.path.isfile(video):
+            status_var.set('Error: Select a valid video file.')
+            return
+
+        # Validate checkpoints
+        cps = {}
+        for mod in MODALITIES:
+            cp = cp_vars[mod].get()
+            if not cp or not os.path.isfile(cp):
+                status_var.set(f'Error: Checkpoint missing for {mod}.')
+                return
+            cps[mod] = cp
+
+        run_btn.config(state='disabled')
+        progress['value'] = 0
+
+        def progress_cb(stage, cur, tot):
+            pct = cur / tot * 100 if tot > 0 else 0
+            root.after(0, lambda: progress.configure(value=pct))
+            root.after(0, lambda: status_var.set(f'{stage}... {cur}/{tot}'))
+
+        def task():
+            try:
+                report = run_pipeline(
+                    video_path=video,
+                    output_dir=output_var.get(),
+                    window_size=window_var.get(),
+                    stride=stride_var.get(),
+                    threshold=threshold_var.get(),
+                    ensemble_weights=ensemble_weights,
+                    checkpoint_paths=cps,
+                    progress_callback=progress_cb,
+                )
+                root.after(0, lambda: status_var.set(report['summary']))
+                root.after(0, lambda: progress.configure(value=100))
+            except Exception as e:
+                root.after(0, lambda: status_var.set(f'Error: {e}'))
+            finally:
+                root.after(0, lambda: run_btn.config(state='normal'))
+
+        threading.Thread(target=task, daemon=True).start()
+
+    run_btn.config(command=on_run)
+    root.mainloop()
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
 if __name__ == '__main__':
     args = parse_args()
+
+    # Resolve checkpoint paths
+    checkpoint_paths = {}
+    for mod_name, arg_name in zip(MODALITIES,
+            ['weights_joint', 'weights_bone', 'weights_joint_motion', 'weights_bone_motion']):
+        path = getattr(args, arg_name)
+        if path is None:
+            path = auto_detect_checkpoint(mod_name, args.save_dir)
+        if path is None or not os.path.isfile(path):
+            print(f'Warning: checkpoint not found for {mod_name}. '
+                  f'Provide --{arg_name} or place checkpoints in {args.save_dir}/')
+            checkpoint_paths[mod_name] = ''
+        else:
+            checkpoint_paths[mod_name] = path
+
+    ensemble_weights = [float(w) for w in args.ensemble_weights.split(',')]
+
     if args.cli:
         if not args.video:
             print('Error: --video is required in CLI mode')
             sys.exit(1)
-        print(f'Extracting landmarks from: {args.video}')
-        result = extract_landmarks(args.video,
-                                   progress_callback=lambda cur, tot: print(f'\r  Frame {cur}/{tot}', end=''))
-        print(f'\n  World shape: {result["world"].shape}, FPS: {result["fps"]}')
-
-        # Test normalization
-        data_batch = result['world'][np.newaxis, ...]  # (1, 3, T, 33, 1)
-        normalized = pre_normalize(data_batch)
-        print(f'  Normalized shape: {normalized.shape}')
-
-        # Test sliding windows
-        windows = create_sliding_windows(normalized[0], args.window_size, args.stride)
-        print(f'  Windows: {len(windows)} (window_size={args.window_size}, stride={args.stride})')
-
-        # Test modality derivation
-        mods = derive_modalities(windows[0][0])
-        for name, arr in mods.items():
-            print(f'  {name}: {arr.shape}')
+        # Validate all checkpoints exist for CLI mode
+        for mod_name in MODALITIES:
+            if not checkpoint_paths.get(mod_name) or not os.path.isfile(checkpoint_paths[mod_name]):
+                print(f'Error: checkpoint not found for {mod_name}.')
+                sys.exit(1)
+        run_pipeline(
+            video_path=args.video,
+            output_dir=args.output_dir,
+            window_size=args.window_size,
+            stride=args.stride,
+            threshold=args.threshold,
+            ensemble_weights=ensemble_weights,
+            checkpoint_paths=checkpoint_paths,
+        )
     else:
-        print('GUI mode not yet implemented. Use --cli.')
+        run_gui(args, checkpoint_paths, ensemble_weights)
