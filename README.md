@@ -1,3 +1,5 @@
+🌐 Language: **English** | [繁體中文](README.zh-TW.md)
+
 # MediaPipe Shift-GCN: Skeleton-Based Fall Detection
 
 A skeleton-based fall detection system built on [Shift-GCN](https://openaccess.thecvf.com/content_CVPR_2020/papers/Cheng_Skeleton-Based_Action_Recognition_With_Shift_Graph_Convolutional_Network_CVPR_2020_paper.pdf) (CVPR 2020). Uses [MediaPipe Pose](https://ai.google.dev/edge/mediapipe/solutions/vision/pose_landmarker) (33 landmarks) instead of depth-sensor skeletons, enabling fall detection from ordinary RGB video.
